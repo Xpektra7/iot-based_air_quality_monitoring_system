@@ -47,6 +47,7 @@ This project demonstrates a scalable, low-cost air quality monitoring architectu
 
 * ✔️ Sensor interfacing (simulation)
 * ✔️ ESP8266/ESP32 firmware testing
+* ✔️ LED Indicator implementation
 * ⏳ Wireless protocol integration
 * ⏳ Real‑world calibration & deployment
 
