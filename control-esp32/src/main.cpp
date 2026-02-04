@@ -34,7 +34,8 @@ const unsigned long RECONNECT_INTERVAL = 300000;  // Try reconnect every 5 minut
 const char* CACHE_FILE = "/offline_cache.json";
 const int MAX_CACHE_ENTRIES = 100;
 
-typedef struct sensor_data {
+// Packed struct ensures consistent memory layout across ESP8266/ESP32
+typedef struct __attribute__((packed)) sensor_data {
   uint8_t sensorID;
   float temperature;
   float humidity;

@@ -13,10 +13,13 @@ extern "C" {
 DHT dht(4, DHT11);
 
 // ESP32 MAC Address (receiver)
+// ⚠️ IMPORTANT: Update this to match YOUR ESP32's MAC address!
+// Check ESP32 serial output for: "ESP32 MAC: XX:XX:XX:XX:XX:XX"
 uint8_t esp32Address[] = {0x00, 0x4B, 0x12, 0x38, 0xB0, 0xE4};
 
 // Data structure - MUST match ESP32 receiver exactly!
-typedef struct sensor_data {
+// Packed struct ensures consistent memory layout across ESP8266/ESP32
+typedef struct __attribute__((packed)) sensor_data {
   uint8_t sensorID;      // Which sensor is this (change for each ESP8266)
   float temperature;     
   float humidity;        
@@ -26,7 +29,7 @@ typedef struct sensor_data {
 sensor_data myData;
 
 // Define which sensor this is (change to 2, 3, etc. for other ESP8266s)
-#define THIS_SENSOR_ID 2
+#define THIS_SENSOR_ID 1
 
 // Send interval (milliseconds)
 #define SEND_INTERVAL 2000
