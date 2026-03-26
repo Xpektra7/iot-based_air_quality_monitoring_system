@@ -16,8 +16,8 @@
 
 // NTP settings
 const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 0;      // Adjust for timezone (e.g., 3600 for GMT+1)
-const int daylightOffset_sec = 0;  // Adjust for daylight saving
+const long gmtOffset_sec = 3600;   // UTC+1 (West Africa)
+const int daylightOffset_sec = 0; // No daylight saving
 
 // Firebase objects
 FirebaseData fbdo;
@@ -27,8 +27,13 @@ FirebaseConfig config;
 // Connection state
 bool wifiConnected = false;
 bool firebaseConnected = false;
+bool firebaseAuthAttempted = false;
 unsigned long lastReconnectAttempt = 0;
-const unsigned long RECONNECT_INTERVAL = 300000;  // Try reconnect every 5 minutes (was 30s)
+const unsigned long RECONNECT_INTERVAL = 60000;  // Try reconnect every 60 seconds (was 5 min)
+const unsigned long FIREBASE_AUTH_TIMEOUT = 5000;  // 5 seconds timeout for auth
+const int MAX_AUTH_RETRIES = 3;
+int authRetryCount = 0;
+bool tokenExpired = false;  // Track if token was revoked/expired
 
 // Offline cache file
 const char* CACHE_FILE = "/offline_cache.json";
@@ -40,9 +45,40 @@ typedef struct __attribute__((packed)) sensor_data {
   float temperature;
   float humidity;
   int airQuality;
+  uint8_t crc;
 } sensor_data;
 
 sensor_data receivedData;
+
+// CRC8 calculation (must match ESP8266)
+uint8_t calculateCRC(const sensor_data* data) {
+  uint8_t crc = 0;
+  const uint8_t* bytes = (const uint8_t*)data;
+  for (size_t i = 0; i < sizeof(sensor_data) - 1; i++) {
+    crc ^= bytes[i];
+  }
+  return crc;
+}
+
+// Verify CRC of received data
+bool verifyCRC(const sensor_data* data) {
+  uint8_t calculatedCRC = calculateCRC(data);
+  return (calculatedCRC == data->crc);
+}
+
+// Watchdog - reset if no activity
+#include <Ticker.h>
+Ticker watchdog;
+unsigned long lastDataReceived = 0;
+#define WATCHDOG_TIMEOUT 60
+
+void watchdogCallback() {
+  unsigned long elapsed = millis() - lastDataReceived;
+  if (elapsed > WATCHDOG_TIMEOUT * 1000) {
+    Serial.printf("\n⚠️ Watchdog triggered! No data received in %lu seconds\n", elapsed / 1000);
+    ESP.restart();
+  }
+}
 
 // Forward declarations
 void onDataReceive(const uint8_t *mac, const uint8_t *data, int len);
@@ -131,6 +167,14 @@ int getCacheCount() {
 
 // Upload cached data to Firebase
 void syncOfflineCache() {
+  if (!Firebase.ready()) {
+    Serial.println("⚠️ Firebase not ready, resetting auth for retry...");
+    firebaseConnected = false;
+    firebaseAuthAttempted = false;  // Allow retry
+    tokenExpired = true;
+    return;
+  }
+  
   File file = SPIFFS.open(CACHE_FILE, FILE_READ);
   if (!file) return;
   
@@ -149,6 +193,17 @@ void syncOfflineCache() {
   
   int successCount = 0;
   for (JsonVariant entry : entries) {
+    // Check if Firebase token expired during sync
+    if (!Firebase.ready()) {
+      String err = fbdo.errorReason();
+      if (err.indexOf("token") != -1 || err.indexOf("expired") != -1 || err.indexOf("revoked") != -1) {
+        Serial.println("⚠️ Token expired during sync, resetting auth...");
+        tokenExpired = true;
+        firebaseAuthAttempted = false;
+      }
+      break;
+    }
+    
     String path = "/sensor_readings/" + String(entry["sensorID"].as<int>()) + "/" + 
                   String(entry["unixTime"].as<unsigned long>());
     
@@ -162,8 +217,15 @@ void syncOfflineCache() {
     if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
       successCount++;
     } else {
-      Serial.println("❌ Sync failed: " + fbdo.errorReason());
-      break;  // Stop on first failure
+      String err = fbdo.errorReason();
+      Serial.println("❌ Sync failed: " + err);
+      
+      // Check if token expired
+      if (err.indexOf("token") != -1 || err.indexOf("expired") != -1 || err.indexOf("revoked") != -1) {
+        tokenExpired = true;
+        firebaseAuthAttempted = false;
+      }
+      break;
     }
     delay(50);  // Small delay between writes
   }
@@ -174,6 +236,23 @@ void syncOfflineCache() {
     Serial.printf("✅ Synced all %d entries, cache cleared\n", successCount);
   } else {
     Serial.printf("⚠️ Synced %d/%d entries\n", successCount, count);
+  }
+}
+
+// WiFi disconnect handler
+void WiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case SYSTEM_EVENT_STA_GOT_IP:
+      Serial.println("📶 WiFi connected");
+      wifiConnected = true;
+      break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+      Serial.println("⚠️ WiFi disconnected");
+      wifiConnected = false;
+      firebaseConnected = false;
+      break;
+    default:
+      break;
   }
 }
 
@@ -206,32 +285,48 @@ bool connectWiFi() {
 bool initFirebase() {
   if (!wifiConnected) return false;
   
+  // Prevent repeated auth attempts if already failed MAX_AUTH_RETRIES times (unless token expired)
+  if (firebaseAuthAttempted && authRetryCount >= MAX_AUTH_RETRIES && !tokenExpired) {
+    Serial.println("⚠️ Firebase auth disabled (max retries exceeded)");
+    Serial.println("   System will continue with offline storage only");
+    return false;
+  }
+  
   Serial.println("🔥 Initializing Firebase...");
   
-  config.api_key = FIREBASE_API_KEY;
-  config.database_url = FIREBASE_HOST;
+  // Re-init Firebase if token expired (need fresh auth)
+  if (!firebaseAuthAttempted || tokenExpired) {
+    config.api_key = FIREBASE_API_KEY;
+    config.database_url = FIREBASE_HOST;
+    
+    auth.user.email = FIREBASE_USER_EMAIL;
+    auth.user.password = FIREBASE_USER_PASSWORD;
+    
+    config.token_status_callback = tokenStatusCallback;
+    
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+    
+    firebaseAuthAttempted = true;
+    tokenExpired = false;
+  }
   
-  auth.user.email = FIREBASE_USER_EMAIL;
-  auth.user.password = FIREBASE_USER_PASSWORD;
-  
-  config.token_status_callback = tokenStatusCallback;
-  
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-  
-  // Wait for authentication
+  // Wait for authentication with shorter timeout
   unsigned long startTime = millis();
-  while (!Firebase.ready() && (millis() - startTime) < 10000) {
+  while (!Firebase.ready() && (millis() - startTime) < FIREBASE_AUTH_TIMEOUT) {
     delay(100);
   }
   
   if (Firebase.ready()) {
     Serial.println("✅ Firebase connected");
     firebaseConnected = true;
+    authRetryCount = 0;  // Reset retry count on success
+    tokenExpired = false;
     return true;
   }
   
-  Serial.println("❌ Firebase connection failed");
+  authRetryCount++;
+  Serial.printf("❌ Firebase auth failed (attempt %d/%d)\n", authRetryCount, MAX_AUTH_RETRIES);
   firebaseConnected = false;
   return false;
 }
@@ -304,12 +399,27 @@ void tryReconnect() {
 
 // ESP-NOW receive callback
 void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len != sizeof(sensor_data)) {
+    Serial.printf("⚠️ Invalid packet size: %d (expected %d)\n", len, sizeof(sensor_data));
+    return;
+  }
+  
   memcpy(&receivedData, data, sizeof(receivedData));
+  
+  // Verify CRC before processing
+  if (!verifyCRC(&receivedData)) {
+    Serial.printf("❌ CRC mismatch! Packet corrupted. Expected: %02X, Got: %02X\n",
+                 calculateCRC(&receivedData), receivedData.crc);
+    return;
+  }
+  
+  // CRC valid - update watchdog
+  lastDataReceived = millis();
   
   String timestamp = getTimestamp();
 
   Serial.printf(
-    "[%s] ID:%d | T:%.2f°C | H:%.2f%% | AQ:%d",
+    "[%s] ID:%d | T:%.2f°C | H:%.2f%% | AQ:%d | CRC:✓",
     timestamp.c_str(),
     receivedData.sensorID,
     receivedData.temperature,
@@ -351,8 +461,16 @@ void setup() {
   delay(100);
   Serial.println("\n========================================");
   Serial.println("   ESP32 Air Quality Control Hub");
-  Serial.println("   With Firebase + Offline Fallback");
+  Serial.println("   With CRC, Watchdog & Auto-Reconnect");
   Serial.println("========================================\n");
+
+  // Register WiFi event handler
+  WiFi.onEvent(WiFiEvent);
+  
+  // Initialize watchdog timer
+  lastDataReceived = millis();
+  watchdog.attach(WATCHDOG_TIMEOUT, watchdogCallback);
+  Serial.printf("✅ Watchdog started (%ds timeout)\n", WATCHDOG_TIMEOUT);
 
   // Initialize SPIFFS for offline storage
   initSPIFFS();
@@ -404,10 +522,46 @@ void setup() {
   Serial.println("----------------------------------------\n");
 }
 
+// Reset Firebase auth (callable from serial for manual retry)
+void resetFirebaseAuth() {
+  firebaseAuthAttempted = false;
+  authRetryCount = 0;
+  firebaseConnected = false;
+  tokenExpired = false;
+  Serial.println("🔄 Firebase auth reset. Will retry on next reconnect.");
+}
+
+// Handle serial commands
+void handleSerialCommands() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    
+    if (cmd == "RESET_FB") {
+      resetFirebaseAuth();
+    } else if (cmd == "STATUS") {
+      Serial.printf("WiFi: %s\n", wifiConnected ? "Connected" : "Disconnected");
+      Serial.printf("Firebase: %s\n", firebaseConnected ? "Connected" : "Disconnected");
+      Serial.printf("Token Expired: %s\n", tokenExpired ? "Yes" : "No");
+      Serial.printf("Auth Attempts: %d/%d\n", authRetryCount, MAX_AUTH_RETRIES);
+      Serial.printf("Cached entries: %d\n", getCacheCount());
+      Serial.printf("Last Reconnect: %lu seconds ago\n", (millis() - lastReconnectAttempt) / 1000);
+    } else if (cmd.length() > 0) {
+      Serial.println("Commands: RESET_FB, STATUS");
+    }
+  }
+}
+
 void loop() {
-  // Periodically try to reconnect if offline
-  if (!firebaseConnected) {
-    tryReconnect();
+  // Handle serial commands
+  handleSerialCommands();
+  
+  // Periodically try to reconnect if offline (respects RECONNECT_INTERVAL)
+  if (!firebaseConnected || tokenExpired) {
+    // Check if enough time has passed since last attempt
+    if (millis() - lastReconnectAttempt >= RECONNECT_INTERVAL) {
+      tryReconnect();
+    }
   }
   
   delay(10);
