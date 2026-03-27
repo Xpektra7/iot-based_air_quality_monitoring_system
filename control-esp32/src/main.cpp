@@ -338,20 +338,23 @@ bool sendToFirebase(sensor_data &data, String timestamp) {
     return false;
   }
   
-  String path = "/sensor_readings/" + String(data.sensorID) + "/" + String(getUnixTime());
+  unsigned long unixTime = getUnixTime();
+  String path = "/sensor_readings/" + String(data.sensorID) + "/" + String(unixTime);
   
   FirebaseJson json;
   json.set("temperature", data.temperature);
   json.set("humidity", data.humidity);
   json.set("airQuality", data.airQuality);
   json.set("timestamp", timestamp);
+  json.set("unixTime", unixTime);  // Added for time-range queries
   
   if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
     Serial.println("☁️  Sent to Firebase");
     
-    // Also update latest reading
+    // Also update latest reading with unixTime
     String latestPath = "/latest/" + String(data.sensorID);
     json.set("lastUpdate", timestamp);
+    json.set("lastUnixTime", unixTime);
     Firebase.RTDB.setJSON(&fbdo, latestPath.c_str(), &json);
     
     return true;
