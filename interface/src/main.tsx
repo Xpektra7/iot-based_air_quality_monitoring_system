@@ -72,26 +72,44 @@ async function fetchSensorData(sensorId: number, timeRange: TimeRange): Promise<
 // Fetch latest reading to determine online status
 async function fetchLatestData(): Promise<{ lastSync: string; isOnline: boolean }> {
   try {
-    const response = await fetch(`${FIREBASE_DB_URL}/latest/1.json`);
-    if (!response.ok) {
-      console.error('Latest fetch error:', response.status);
-      return { lastSync: 'Error', isOnline: false };
+    // Fetch both sensor latest readings
+    const [res1, res2] = await Promise.all([
+      fetch(`${FIREBASE_DB_URL}/latest/1.json`),
+      fetch(`${FIREBASE_DB_URL}/latest/2.json`)
+    ]);
+    
+    let latestUnixTime = 0;
+    let latestTimestamp = 'No data';
+    
+    // Check sensor 1
+    if (res1.ok) {
+      const data1 = await res1.json();
+      if (data1 && data1.lastUnixTime && data1.lastUnixTime > latestUnixTime) {
+        latestUnixTime = data1.lastUnixTime;
+        latestTimestamp = data1.lastUpdate || 'Unknown';
+      }
     }
-
-    const data = await response.json();
-
-    if (data && data.lastUpdate) {
-      const now = new Date();
-      const lastSync = new Date(data.lastUpdate);
-      const diffMs = now.getTime() - lastSync.getTime();
-      const diffMins = diffMs / 60000;
-
+    
+    // Check sensor 2
+    if (res2.ok) {
+      const data2 = await res2.json();
+      if (data2 && data2.lastUnixTime && data2.lastUnixTime > latestUnixTime) {
+        latestUnixTime = data2.lastUnixTime;
+        latestTimestamp = data2.lastUpdate || 'Unknown';
+      }
+    }
+    
+    if (latestUnixTime > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const diffSecs = now - latestUnixTime;
+      const diffMins = diffSecs / 60;
+      
       return {
-        lastSync: data.lastUpdate,
+        lastSync: latestTimestamp,
         isOnline: diffMins < 5
       };
     }
-
+    
     return { lastSync: 'No data', isOnline: false };
   } catch (error) {
     console.error('Error fetching status:', error);
