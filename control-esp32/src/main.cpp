@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <math.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -18,6 +19,38 @@
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600;   // UTC+1 (West Africa)
 const int daylightOffset_sec = 0; // No daylight saving
+
+// MQ135 Calibration Constants
+const float RL = 10000.0;         // 10kΩ pull-down resistor
+const float R0 = 83000.0;         // Calibrated baseline (~83kΩ)
+const float a = 116.602;         // CO2 curve constant
+const float b = -2.769;           // CO2 curve exponent
+const float CALIBRATION_FACTOR = 1.7; // Adjusted for indoor ~600ppm
+
+// MQ135 Calibration Function
+float calibrateMQ135(int rawADC, float temp, float humidity) {
+  // Avoid division by zero
+  if (rawADC <= 0 || rawADC >= 1023) return 0;
+  
+  // Step 1: ADC to Rs
+  float rs = ((1023.0 - rawADC) / rawADC) * RL;
+  
+  // Step 2: Rs to ppm (power law)
+  float ratio = rs / R0;
+  if (ratio <= 0) return 0;
+  float ppm = a * pow(ratio, b);
+  
+  // Step 3: Temperature compensation
+  ppm = ppm * (1 + 0.02 * (temp - 25));
+  
+  // Step 4: Humidity compensation  
+  ppm = ppm * (1 + 0.01 * (humidity - 50));
+  
+  // Step 5: Apply calibration factor
+  ppm = ppm * CALIBRATION_FACTOR;
+  
+  return ppm;
+}
 
 // Firebase objects
 FirebaseData fbdo;
@@ -47,6 +80,8 @@ typedef struct __attribute__((packed)) sensor_data {
   int airQuality;
   uint8_t crc;
 } sensor_data;
+
+int lastRawADC = 0;  // Store raw ADC separately
 
 sensor_data receivedData;
 
@@ -345,6 +380,7 @@ bool sendToFirebase(sensor_data &data, String timestamp) {
   json.set("temperature", data.temperature);
   json.set("humidity", data.humidity);
   json.set("airQuality", data.airQuality);
+  json.set("rawADC", lastRawADC);
   json.set("timestamp", timestamp);
   json.set("unixTime", unixTime);  // Added for time-range queries
   
@@ -355,6 +391,7 @@ bool sendToFirebase(sensor_data &data, String timestamp) {
     String latestPath = "/latest/" + String(data.sensorID);
     json.set("lastUpdate", timestamp);
     json.set("lastUnixTime", unixTime);
+    json.set("rawADC", lastRawADC);
     Firebase.RTDB.setJSON(&fbdo, latestPath.c_str(), &json);
     
     return true;
@@ -418,6 +455,17 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
   
   // CRC valid - update watchdog
   lastDataReceived = millis();
+  
+  // Store raw ADC before calibration
+  lastRawADC = receivedData.airQuality;
+  
+  // Apply MQ135 calibration (ADC to PPM with temp/humidity compensation)
+  float calibratedPPM = calibrateMQ135(
+    receivedData.airQuality,
+    receivedData.temperature,
+    receivedData.humidity
+  );
+  receivedData.airQuality = (int)calibratedPPM;
   
   String timestamp = getTimestamp();
 

@@ -29,24 +29,24 @@ async function fetchSensorData(sensorId: number, timeRange: TimeRange): Promise<
   try {
     const now = Math.floor(Date.now() / 1000);
     const cutoff = timeRange === 'all' ? 0 : now - TIME_RANGE_SECONDS[timeRange];
-    
+
     let url = `${FIREBASE_DB_URL}/sensor_readings/${sensorId}.json`;
-    
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
       }
     });
-    
+
     if (!response.ok) {
       console.error('Fetch error:', response.status, await response.text());
       throw new Error(`Failed to fetch: ${response.status}`);
     }
-    
+
     const data = await response.json();
     if (!data) return [];
-    
+
     // Convert Firebase object to array - keys are the unix timestamps
     let readings: SensorData[] = Object.entries(data).map(([key, value]: [string, any]) => ({
       temperature: value.temperature || 0,
@@ -55,12 +55,12 @@ async function fetchSensorData(sensorId: number, timeRange: TimeRange): Promise<
       timestamp: value.timestamp || '',
       unixTime: parseInt(key) || 0,
     }));
-    
+
     // Filter by time range client-side
     if (cutoff > 0) {
       readings = readings.filter(r => (r.unixTime || 0) >= cutoff);
     }
-    
+
     // Sort by unixTime and take last 100
     return readings.sort((a, b) => (a.unixTime || 0) - (b.unixTime || 0)).slice(-100);
   } catch (error) {
@@ -77,10 +77,10 @@ async function fetchLatestData(): Promise<{ lastSync: string; isOnline: boolean 
       fetch(`${FIREBASE_DB_URL}/latest/1.json`),
       fetch(`${FIREBASE_DB_URL}/latest/2.json`)
     ]);
-    
+
     let latestUnixTime = 0;
     let latestTimestamp = 'No data';
-    
+
     // Check sensor 1
     if (res1.ok) {
       const data1 = await res1.json();
@@ -89,7 +89,7 @@ async function fetchLatestData(): Promise<{ lastSync: string; isOnline: boolean 
         latestTimestamp = data1.lastUpdate || 'Unknown';
       }
     }
-    
+
     // Check sensor 2
     if (res2.ok) {
       const data2 = await res2.json();
@@ -98,18 +98,20 @@ async function fetchLatestData(): Promise<{ lastSync: string; isOnline: boolean 
         latestTimestamp = data2.lastUpdate || 'Unknown';
       }
     }
-    
+
     if (latestUnixTime > 0) {
       const now = Math.floor(Date.now() / 1000);
       const diffSecs = now - latestUnixTime;
       const diffMins = diffSecs / 60;
-      
+
+      console.log(latestTimestamp, diffMins)
+
       return {
         lastSync: latestTimestamp,
         isOnline: diffMins < 5
       };
     }
-    
+
     return { lastSync: 'No data', isOnline: false };
   } catch (error) {
     console.error('Error fetching status:', error);
@@ -142,6 +144,7 @@ function Root() {
     } finally {
       setLoading(false);
     }
+    console.log(lastSyncTime, isOnline)
   };
 
   useEffect(() => {
@@ -152,6 +155,7 @@ function Root() {
   useEffect(() => {
     // Refresh every 10 seconds (only if not loading)
     if (!loading) {
+      fetchLatestData()
       const interval = setInterval(loadData, 10000);
       return () => clearInterval(interval);
     }

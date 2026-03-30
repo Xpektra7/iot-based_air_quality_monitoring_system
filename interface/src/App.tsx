@@ -101,7 +101,7 @@ export default function App({ sensor1Data, sensor2Data, lastSyncTime, isOnline, 
     labels,
     datasets: [
       {
-        label: 'Sensor 1 - Air Quality',
+        label: 'Sensor 1 - PPM',
         data: showSensor1 ? getSensorValues(sensor1Data, 'airQuality') : [],
         borderColor: '#22c55e',
         backgroundColor: '#22c55e',
@@ -110,7 +110,7 @@ export default function App({ sensor1Data, sensor2Data, lastSyncTime, isOnline, 
         pointRadius: 3,
       },
       {
-        label: 'Sensor 2 - Air Quality',
+        label: 'Sensor 2 - PPM',
         data: showSensor2 ? getSensorValues(sensor2Data, 'airQuality') : [],
         borderColor: '#f59e0b',
         backgroundColor: '#f59e0b',
@@ -148,11 +148,11 @@ export default function App({ sensor1Data, sensor2Data, lastSyncTime, isOnline, 
   const latestSensor1 = sensor1Data[sensor1Data.length - 1];
   const latestSensor2 = sensor2Data[sensor2Data.length - 1];
 
-  // Status indicator
+  // Status indicator - PPM thresholds
   const getAQStatus = (aq: number) => {
-    if (!aq || aq < 200) return { label: 'Good', color: '#22c55e' };
-    if (aq < 500) return { label: 'Moderate', color: '#f59e0b' };
-    if (aq < 1000) return { label: 'Unhealthy', color: '#ef4444' };
+    if (!aq || aq < 400) return { label: 'Good', color: '#22c55e' };
+    if (aq < 1000) return { label: 'Moderate', color: '#f59e0b' };
+    if (aq < 2000) return { label: 'Unhealthy', color: '#ef4444' };
     return { label: 'Very Unhealthy', color: '#7f1d1d' };
   };
 
@@ -169,23 +169,23 @@ export default function App({ sensor1Data, sensor2Data, lastSyncTime, isOnline, 
         </div>
       </header>
 
-      {/* AQ Legend/Tags */}
+      {/* PPM Legend/Tags */}
       <section className="aq-tags">
         <div className="tag" style={{ borderColor: '#22c55e' }}>
           <span className="tag-color" style={{ background: '#22c55e' }}></span>
-          <span>Good (AQ &lt; 200)</span>
+          <span>Good (PPM &lt; 400)</span>
         </div>
         <div className="tag" style={{ borderColor: '#f59e0b' }}>
           <span className="tag-color" style={{ background: '#f59e0b' }}></span>
-          <span>Moderate (AQ 200-500)</span>
+          <span>Moderate (PPM 400-1000)</span>
         </div>
         <div className="tag" style={{ borderColor: '#ef4444' }}>
           <span className="tag-color" style={{ background: '#ef4444' }}></span>
-          <span>Unhealthy (AQ 500-1000)</span>
+          <span>Unhealthy (PPM 1000-2000)</span>
         </div>
         <div className="tag" style={{ borderColor: '#7f1d1d' }}>
           <span className="tag-color" style={{ background: '#7f1d1d' }}></span>
-          <span>Very Unhealthy (AQ &gt; 1000)</span>
+          <span>Very Unhealthy (PPM &gt; 2000)</span>
         </div>
       </section>
 
